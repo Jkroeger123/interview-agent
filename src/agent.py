@@ -12,10 +12,11 @@ from livekit.agents import (
     cli,
     metrics,
 )
-from livekit.plugins import noise_cancellation, silero
+from livekit.plugins import elevenlabs, noise_cancellation, silero, tavus
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
+logger.setLevel(logging.DEBUG)  # Enable debug logging
 
 load_dotenv(".env.local")
 
@@ -23,10 +24,20 @@ load_dotenv(".env.local")
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
+            instructions="""You are a U.S. visa officer conducting a visa interview at an embassy or consulate. 
+            You are professional but firm, occasionally impatient, and somewhat skeptical of the applicant's responses.
+            Your job is to determine if the applicant is eligible for a U.S. visa by asking probing questions about their:
+            - Purpose of visit to the United States
+            - Ties to their home country (job, family, property)
+            - Financial situation and ability to support themselves
+            - Travel history
+            - Immigration intent (whether they plan to return home)
+            
+            Your tone is businesslike and occasionally annoyed, especially if answers are vague or unconvincing.
+            You interrupt if answers are too long, and you're skeptical of rehearsed responses.
+            Keep your questions direct and don't be overly friendly. You're busy and have many applicants to process.
+            Your responses are brief, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
+            Speak naturally as if conducting a real interview, with occasional sighs or expressions of impatience.""",
         )
 
     # To add tools, use the @function_tool decorator.
@@ -58,7 +69,19 @@ async def entrypoint(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
+    # Set up a voice AI pipeline using OpenAI, ElevenLabs, AssemblyAI, and the LiveKit turn detector
+    logger.info("Initializing ElevenLabs TTS with voice_id=39RWTTKuyH2ra0eFxGkf")
+    
+    try:
+        tts_instance = elevenlabs.TTS(
+            voice_id="39RWTTKuyH2ra0eFxGkf",  # Your custom ElevenLabs voice
+            model="eleven_multilingual_v2"
+        )
+        logger.info("ElevenLabs TTS initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize ElevenLabs TTS: {e}")
+        raise
+    
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
@@ -67,8 +90,8 @@ async def entrypoint(ctx: JobContext):
         # See all available models at https://docs.livekit.io/agents/models/llm/
         llm="openai/gpt-4.1-mini",
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts="cartesia/sonic-2:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+        # Using ElevenLabs plugin to support custom voice IDs
+        tts=tts_instance,
         # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
         # See more at https://docs.livekit.io/agents/build/turns
         turn_detection=MultilingualModel(),
@@ -103,13 +126,15 @@ async def entrypoint(ctx: JobContext):
 
     ctx.add_shutdown_callback(log_usage)
 
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
+    # Add Tavus virtual avatar to the session
+    # Get your API key from https://platform.tavus.io/
+    import os
+    avatar = tavus.AvatarSession(
+        replica_id=os.getenv("TAVUS_REPLICA_ID"),  # Your Tavus replica ID
+        persona_id=os.getenv("TAVUS_PERSONA_ID"),  # Your Tavus persona ID
+    )
+    # Start the avatar and wait for it to join
+    await avatar.start(session, room=ctx.room)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
@@ -123,6 +148,12 @@ async def entrypoint(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+    
+    # Generate initial greeting to start the interview immediately
+    logger.info("Generating initial visa interview greeting")
+    session.generate_reply(
+        instructions="Greet the visa applicant briefly and ask them to state their purpose for wanting to visit the United States. Be direct and slightly impatient, as you have many applicants to process today."
+    )
 
 
 if __name__ == "__main__":
