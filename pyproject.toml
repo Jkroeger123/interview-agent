@@ -13,6 +13,7 @@ dependencies = [
     "livekit-plugins-anam>=1.2.14",
     "livekit-plugins-noise-cancellation~=0.2",
     "python-dotenv",
+    "ragie>=0.1.0",
 ]
 
 [dependency-groups]

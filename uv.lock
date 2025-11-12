@@ -5,7 +5,8 @@ resolution-markers = [
     "python_full_version >= '3.13'",
     "python_full_version >= '3.11' and python_full_version < '3.13'",
     "python_full_version == '3.10.*'",
-    "python_full_version < '3.10'",
+    "python_full_version >= '3.9.2' and python_full_version < '3.10'",
+    "python_full_version < '3.9.2'",
 ]
 
 [[package]]
@@ -17,6 +18,8 @@ dependencies = [
     { name = "livekit-plugins-anam" },
     { name = "livekit-plugins-noise-cancellation" },
     { name = "python-dotenv" },
+    { name = "ragie", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9.2'" },
+    { name = "ragie", version = "1.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9.2'" },
 ]
 
 [package.dev-dependencies]
@@ -32,6 +35,7 @@ requires-dist = [
     { name = "livekit-plugins-anam", specifier = ">=1.2.14" },
     { name = "livekit-plugins-noise-cancellation", specifier = "~=0.2" },
     { name = "python-dotenv" },
+    { name = "ragie", specifier = ">=0.1.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -466,7 +470,8 @@ name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10'",
+    "python_full_version >= '3.9.2' and python_full_version < '3.10'",
+    "python_full_version < '3.9.2'",
 ]
 dependencies = [
     { name = "colorama", marker = "python_full_version < '3.10' and sys_platform == 'win32'" },
@@ -985,6 +990,15 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonpath-python"
+version = "1.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/49/e582e50b0c54c1b47e714241c4a4767bf28758bf90212248aea8e1ce8516/jsonpath-python-1.0.6.tar.gz", hash = "sha256:dd5be4a72d8a2995c3f583cf82bf3cd1a9544cfdabf2d22595b67aff07349666", size = 18121, upload-time = "2022-03-14T02:35:01.877Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/8a/d63959f4eff03893a00e6e63592e3a9f15b9266ed8e0275ab77f8c7dbc94/jsonpath_python-1.0.6-py3-none-any.whl", hash = "sha256:1e3b78df579f5efc23565293612decee04214609208a2335884b3ee3f786b575", size = 7552, upload-time = "2022-03-14T02:34:59.754Z" },
+]
+
+[[package]]
 name = "livekit"
 version = "1.0.13"
 source = { registry = "https://pypi.org/simple" }
@@ -1451,7 +1465,8 @@ name = "numpy"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10'",
+    "python_full_version >= '3.9.2' and python_full_version < '3.10'",
+    "python_full_version < '3.9.2'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/75/10dd1f8116a8b796cb2c737b674e02d02e80454bda953fa7e65d8c12b016/numpy-2.0.2.tar.gz", hash = "sha256:883c987dee1880e2a864ab0dc9892292582510604156762362d9326444636e78", size = 18902015, upload-time = "2024-08-26T20:19:40.945Z" }
 wheels = [
@@ -1656,7 +1671,8 @@ name = "onnxruntime"
 version = "1.20.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.10'",
+    "python_full_version >= '3.9.2' and python_full_version < '3.10'",
+    "python_full_version < '3.9.2'",
 ]
 dependencies = [
     { name = "coloredlogs", marker = "python_full_version < '3.10'" },
@@ -2301,6 +2317,44 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/62/71c27c94f457cf4418ef8ccc71735324c549f7e3ea9d34aba50874563561/pyyaml-6.0.3-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:27c0abcb4a5dac13684a37f76e701e054692a9b2d3064b70f5e4eb54810553d7", size = 755677, upload-time = "2025-09-25T21:33:09.876Z" },
     { url = "https://files.pythonhosted.org/packages/29/3d/6f5e0d58bd924fb0d06c3a6bad00effbdae2de5adb5cda5648006ffbd8d3/pyyaml-6.0.3-cp39-cp39-win32.whl", hash = "sha256:1ebe39cb5fc479422b83de611d14e2c0d3bb2a18bbcb01f229ab3cfbd8fee7a0", size = 142592, upload-time = "2025-09-25T21:33:10.983Z" },
     { url = "https://files.pythonhosted.org/packages/f0/0c/25113e0b5e103d7f1490c0e947e303fe4a696c10b501dea7a9f49d4e876c/pyyaml-6.0.3-cp39-cp39-win_amd64.whl", hash = "sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007", size = 158777, upload-time = "2025-09-25T21:33:15.55Z" },
+]
+
+[[package]]
+name = "ragie"
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.9.2'",
+]
+dependencies = [
+    { name = "httpx", marker = "python_full_version < '3.9.2'" },
+    { name = "jsonpath-python", marker = "python_full_version < '3.9.2'" },
+    { name = "pydantic", marker = "python_full_version < '3.9.2'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f9/a3/2a1abf9e0fca8479ca4974b3decf29bcd1f035401c10b51b03d9b7d4d967/ragie-1.8.0.tar.gz", hash = "sha256:fe064e62aa2864d12b906ba793a8718aa87ae374463c808eb67b963ce36affb5", size = 62494, upload-time = "2025-04-24T13:36:34.636Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/54/31d27e902448cb69daf0e264b78bbc84d965d818d53135f5920f3924975e/ragie-1.8.0-py3-none-any.whl", hash = "sha256:598c64e0f5b506412b9b815296c7fcd0a0cfa752b4ccd0e87c8cc4f6c14bba34", size = 123393, upload-time = "2025-04-24T13:36:32.687Z" },
+]
+
+[[package]]
+name = "ragie"
+version = "1.13.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13'",
+    "python_full_version >= '3.11' and python_full_version < '3.13'",
+    "python_full_version == '3.10.*'",
+    "python_full_version >= '3.9.2' and python_full_version < '3.10'",
+]
+dependencies = [
+    { name = "httpcore", marker = "python_full_version >= '3.9.2'" },
+    { name = "httpx", marker = "python_full_version >= '3.9.2'" },
+    { name = "jsonpath-python", marker = "python_full_version >= '3.9.2'" },
+    { name = "pydantic", marker = "python_full_version >= '3.9.2'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b7/b8/0c7e8c978c77346af55a6c9f21e9b3c21112cddb3774c6f0a2272455cebe/ragie-1.13.0.tar.gz", hash = "sha256:42ed4d281dc9c9f1e63568af5cc3a89534d52e084c2ac8ccd628385354046b6c", size = 94315, upload-time = "2025-10-21T21:10:52.025Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/94/6d5129cabd4e4b0aef8bbd8b3254e9ab107909cc23d678a763cddf4dd749/ragie-1.13.0-py3-none-any.whl", hash = "sha256:d07bf7205344eb98e1c673b8bf8b466550e0a722f8939c638ce34a44d4e70011", size = 201075, upload-time = "2025-10-21T21:10:50.711Z" },
 ]
 
 [[package]]
