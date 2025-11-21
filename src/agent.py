@@ -539,7 +539,7 @@ async def entrypoint(ctx: JobContext):
                 logger.info(f"🔴 Received end_interview signal from user (reason: {message.get('reason', 'unknown')})")
                 logger.info("🔴 Agent leaving room to close session gracefully")
                 # Disconnect the agent from the room so LiveKit can close it cleanly
-                ctx.room.disconnect()
+                await ctx.room.disconnect()
                 
         except Exception as e:
             logger.error(f"Error processing data message: {e}")
