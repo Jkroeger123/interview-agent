@@ -41,16 +41,12 @@ class Assistant(Agent):
     def __init__(
         self,
         config: dict,
-        ragie_user_partition: str,
         ragie_global_partition: str,
-        uploaded_documents: list[dict]
     ) -> None:
         logger.info("🤖 Initializing Assistant class")
-        self.ragie_user_partition = ragie_user_partition
         self.ragie_global_partition = ragie_global_partition
-        self.uploaded_documents = uploaded_documents
         self.config = config
-        logger.info(f"🤖 Assistant config: visa={config.get('visaCode')}, uploaded_docs={len(uploaded_documents)}")
+        logger.info(f"🤖 Assistant config: visa={config.get('visaCode')}")
         
         # Build dynamic instructions based on config
         logger.info("🤖 Building dynamic instructions...")
@@ -106,6 +102,13 @@ TONE & STYLE:
 - No emojis, asterisks, or formatting symbols
 - Speak naturally as in a real interview
 
+CRITICAL: ASK ONE QUESTION AT A TIME
+- NEVER ask compound or multi-part questions
+- BAD: "What school did you attend, what are you studying, and how much is tuition?"
+- GOOD: "What school did you attend?" (then wait for answer, then ask next question)
+- Ask follow-up questions based on their response, but ONE AT A TIME
+- This is how real visa officers conduct interviews - they ask, listen, then ask again
+
 {example_transcript}"""
         
         # Add visa-specific context (streamlined)
@@ -113,63 +116,6 @@ TONE & STYLE:
 VISA TYPE: {config.get('visaCode', 'Unknown')} - {config.get('visaName', 'Unknown')}
 
 {config.get('agentPromptContext', '')}
-"""
-        
-        # Build document verification context
-        uploaded_docs_context = ""
-        if len(self.uploaded_documents) > 0:
-            docs_list = "\n".join([
-                f"   - {doc.get('friendlyName')} (use '{doc.get('internalName')}' in tool calls)" +
-                (" [REQUIRED]" if doc.get('isRequired') else " [optional]")
-                for doc in self.uploaded_documents
-            ])
-            
-            uploaded_docs_context = f"""
-
-CRITICAL: APPLICANT'S UPLOADED DOCUMENTS
-
-The applicant has uploaded the following documents:
-{docs_list}
-
-VERIFICATION PROTOCOL - FOLLOW STRICTLY:
-
-1. WHEN APPLICANT MAKES SPECIFIC CLAIMS (dates, amounts, names, institutions):
-   - IMMEDIATELY call lookup_user_documents to verify
-   - Use the 'document_types' parameter to search specific documents
-   - Examples:
-     * They say "August 15": lookup_user_documents("program start date", ["i20_form"])
-     * They say "$50,000 income": lookup_user_documents("sponsor income", ["bank_statement"])
-     * They say "Northwestern": lookup_user_documents("university name", ["admission_letter"])
-
-2. ALWAYS VERIFY BEFORE PROCEEDING:
-   - Do NOT move to next question until you've verified the current claim
-   - Call lookup_user_documents in the SAME response where they give specific info
-   - Cross-reference their verbal answer with document content
-
-3. IF INFORMATION DOESN'T MATCH:
-   - Challenge immediately: "I see [X] in your [document], but you said [Y]. Please clarify."
-   - Give ONE chance to explain
-   - If explanation is weak, note as red flag and continue with heightened scrutiny
-
-4. IF THEY'RE VAGUE:
-   - Demand specifics: "I need the exact date from your I-20"
-   - Then immediately verify their specific answer
-
-REMEMBER: A real visa officer has these documents open and constantly cross-references them.
-You MUST simulate this by actively using lookup_user_documents throughout the interview.
-DO NOT be passive - be proactive about verification!
-"""
-        else:
-            uploaded_docs_context = """
-
-WARNING: NO DOCUMENTS UPLOADED
-
-The applicant has NOT uploaded any supporting documents. This is a significant red flag.
-
-- Question why they came unprepared
-- Ask how they plan to prove their claims without documentation
-- Be significantly more skeptical of all claims
-- Note this as a major concern in your assessment
 """
         
         # Add focus areas if specified
@@ -198,16 +144,34 @@ INTERVIEW DURATION: {duration} minutes
 - Real visa interviews are brief (3-7 minutes typically) and decisive
 """
         
-        # Add document reference guidance
+        # Add interview strategy guidance
         doc_text = """
 AVAILABLE TOOLS:
 
 1. get_relevant_questions: Fetch specific questions for a topic (e.g., "financial", "academic", "ties to home country")
-2. lookup_user_documents: Search the applicant's submitted documents
-3. lookup_reference_documents: Search official visa guidelines and requirements
-4. end_interview: End the session (NO PARAMETERS - you must say goodbye in conversation FIRST, then call this)
+2. lookup_reference_documents: Search official visa guidelines and requirements
+3. end_interview: End the session (NO PARAMETERS - you must say goodbye in conversation FIRST, then call this)
 
 INTERVIEW STRATEGY - CRITICAL GUIDELINES:
+
+ATOMIC QUESTIONS - ONE AT A TIME:
+CRITICAL: Ask ONE question at a time. NO compound or multi-part questions.
+
+BAD Examples:
+- "What school are you attending, what will you study, and how much is tuition?"
+- "Tell me about your financial sponsor and how much they earn."
+- "Where did you do your undergraduate degree and what was your GPA?"
+
+GOOD Examples:
+- "What school are you attending?" (wait for answer)
+- Then: "What program will you be studying?" (wait for answer)
+- Then: "How much is the tuition?" (wait for answer)
+
+WHY THIS MATTERS:
+- Real visa officers ask one question at a time
+- It allows you to listen and follow up naturally
+- It prevents overwhelming the applicant
+- It creates a more natural conversation flow
 
 QUESTIONING APPROACH:
 - Use get_relevant_questions to get main questions from the question bank
@@ -216,27 +180,12 @@ QUESTIONING APPROACH:
 - Ask follow-up questions naturally based on their responses
 - If something doesn't make sense, dig deeper immediately
 - Be conversational but maintain professional control
-
-DOCUMENT VERIFICATION - ALWAYS CROSS-CHECK:
-CRITICAL: Whenever an applicant provides specific information (dates, amounts, school names, sponsor details, etc.), 
-you MUST verify it against their documents using lookup_user_documents.
-
-Examples of when to verify:
-- "I'm attending Northwestern University" → lookup_user_documents("Northwestern University admission letter")
-- "My sponsor earns $80,000 per year" → lookup_user_documents("sponsor income $80,000 salary")
-- "My I-20 shows my program starts in August" → lookup_user_documents("I-20 program start date")
-- "I have $50,000 in my bank account" → lookup_user_documents("bank statement balance $50,000")
-
-WHEN INFORMATION DOESN'T MATCH:
-- If documents contradict their answer, call it out immediately but professionally
-- Example: "I notice in your bank statement, the balance shows $30,000, not $50,000. Can you clarify?"
-- Example: "Your admission letter indicates the program starts in September, not August as you mentioned. Which is correct?"
-- This is realistic - visa officers DO this in real interviews
+- REMEMBER: ONE question at a time, then WAIT for the response
 
 FLEXIBILITY IN QUESTIONING:
 - Don't just go question-by-question through the bank like a checklist
 - If they mention something interesting, follow up on it before moving to the next bank question
-- If an answer is weak or raises a red flag, address it immediately
+- If an answer is weak or raises a red flag, address it immediately with a follow-up
 - Skip questions if they've already been naturally answered
 - Prioritize depth over breadth - better to thoroughly explore 3-4 areas than superficially cover 10
 
@@ -257,7 +206,6 @@ Step 2 (Next Turn - AFTER they respond):
         full_instructions = f"""{base_instructions}
 
 {visa_context}{focus_text}
-{uploaded_docs_context}
 {question_text}
 {duration_text}
 {doc_text}
@@ -336,97 +284,6 @@ Step 2 (Next Turn - AFTER they respond):
         result = f"Relevant questions for {topic}:\n{formatted}\n\nSelect the most appropriate questions based on the conversation flow. You don't need to ask all of them."
         logger.info(f"✅ TOOL RESULT: Found {len(questions_to_return)} questions for topic '{topic}'")
         return result
-    
-    @function_tool
-    async def lookup_user_documents(self, question: str, document_types: Optional[list[str]] = None):
-        """CRITICAL VERIFICATION TOOL - Search the applicant's uploaded documents to verify their claims.
-        
-        DOCUMENTS AVAILABLE TO SEARCH:
-        {doc_list_placeholder}
-        
-        WHEN TO USE THIS TOOL (call immediately when):
-        - Applicant mentions specific dates (program start, graduation, etc.)
-        - Applicant mentions specific amounts (income, tuition, savings, etc.)  
-        - Applicant names institutions (university, employer, sponsor company, etc.)
-        - Applicant references any document-verifiable fact
-        - You suspect inconsistency between their verbal answer and documents
-        
-        HOW TO USE:
-        1. Use 'document_types' parameter to search specific documents (RECOMMENDED)
-        2. Leave 'document_types' empty to search all documents (less precise)
-        
-        GOOD EXAMPLES:
-        - lookup_user_documents("program start date", ["i20_form"])
-        - lookup_user_documents("sponsor annual income", ["bank_statement", "sponsor_letter"])
-        - lookup_user_documents("university name and program", ["admission_letter", "i20_form"])
-        - lookup_user_documents("GPA and graduation date", ["transcript"])
-        
-        BAD EXAMPLES:
-        - lookup_user_documents("everything") - Too vague
-        - lookup_user_documents("documents") - Too broad
-        
-        Args:
-            question: Specific information to verify (e.g., "program start date", "sponsor income")
-            document_types: Optional list of document internal names to search in (e.g., ["i20_form", "bank_statement"])
-        """
-        logger.info(f"🔧 TOOL CALL: lookup_user_documents(question='{question}', document_types={document_types})")
-        
-        if not self.ragie_user_partition:
-            return "No user partition configured - unable to access user documents."
-        
-        try:
-            from ragie import Ragie
-            
-            ragie_client = Ragie(auth=os.getenv("RAGIE_API_KEY"))
-            
-            logger.info(f"🔍 QUERYING USER DOCUMENTS:")
-            logger.info(f"   Question: {question[:100]}...")
-            logger.info(f"   Partition: {self.ragie_user_partition}")
-            if document_types:
-                logger.info(f"   Filtering by document types: {document_types}")
-            else:
-                logger.info(f"   Searching ALL user documents")
-            
-            # Build retrieval request
-            retrieval_request = {
-                "query": question,
-                "partition": self.ragie_user_partition,
-                "top_k": 5,
-            }
-            
-            # Add metadata filter if document types specified
-            if document_types and len(document_types) > 0:
-                retrieval_request["metadata_filter"] = {
-                    "documentInternalName": {"$in": document_types}
-                }
-            
-            results = ragie_client.retrievals.retrieve(request=retrieval_request)
-            
-            if not results or not hasattr(results, 'scored_chunks') or len(results.scored_chunks) == 0:
-                logger.info("✅ TOOL RESULT: Found 0 relevant chunks from user documents")
-                
-                # Provide helpful context if no results
-                if document_types:
-                    doc_list = ", ".join(document_types)
-                    return f"No information found in the following document types: {doc_list}. The applicant may not have uploaded these documents yet, or the information is not present in those specific documents."
-                else:
-                    return "No relevant information found in the applicant's uploaded documents. They may not have uploaded the necessary documents yet."
-            
-            # Extract and format the relevant content
-            chunks_text = []
-            for chunk in results.scored_chunks[:5]:  # Top 5 results
-                doc_name = chunk.metadata.get("documentType", "Unknown Document")
-                text = chunk.text.strip()
-                chunks_text.append(f"[From {doc_name}]: {text}")
-            
-            logger.info(f"✅ TOOL RESULT: Found {len(chunks_text)} relevant chunks from user documents")
-            
-            combined_text = "\n\n".join(chunks_text)
-            return f"Information from applicant's documents:\n{combined_text}"
-            
-        except Exception as e:
-            logger.error(f"❌ TOOL ERROR: Error querying user documents: {str(e)}")
-            return f"Error accessing documents: {str(e)}"
     
     @function_tool
     async def lookup_reference_documents(self, question: str):
@@ -583,33 +440,18 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"✅ Loaded agent config for {_agent_config.get('visaCode', 'Unknown')} visa")
             logger.info(f"✅ Question bank size: {len(_agent_config.get('questionBank', []))} questions")
             
-            # Get new simplified partition structure
-            ragie_user_partition = _agent_config.get('ragieUserPartition', '')
+            # Get global reference partition
             ragie_global_partition = _agent_config.get('ragieGlobalPartition', 'visa-student')
-            uploaded_documents = _agent_config.get('uploadedDocuments', [])
-            
-            logger.info(f"✅ Ragie user partition: {ragie_user_partition}")
             logger.info(f"✅ Ragie global partition: {ragie_global_partition}")
-            logger.info(f"✅ Uploaded documents: {len(uploaded_documents)}")
-            for doc in uploaded_documents:
-                req_label = " [REQUIRED]" if doc.get('isRequired') else " [optional]"
-                logger.info(f"   - {doc.get('friendlyName')} ({doc.get('internalName')}){req_label}")
             
         except json.JSONDecodeError as e:
             logger.error(f"❌ Failed to parse room metadata: {e}")
             logger.error(f"❌ Raw metadata: {ctx.job.room.metadata[:200]}")  # First 200 chars
-            ragie_user_partition = ""
             ragie_global_partition = "visa-student"
-            uploaded_documents = []
     else:
         logger.warning("⚠️ No room metadata found - using default configuration")
         logger.warning(f"⚠️ Room name: {ctx.room.name}")
-        ragie_user_partition = ""
         ragie_global_partition = "visa-student"
-        uploaded_documents = []
-    
-    if not ragie_user_partition:
-        logger.warning("⚠️ No user partition configured - document lookup will not work")
     
     # Try ElevenLabs TTS first, fallback to Cartesia if it fails
     logger.info("Attempting to initialize ElevenLabs TTS...")
@@ -673,6 +515,7 @@ async def entrypoint(ctx: JobContext):
             # packet is a DataPacket object, extract the data
             data = packet.data if hasattr(packet, 'data') else packet
             message = json.loads(data.decode() if hasattr(data, 'decode') else data)
+            
             if message.get('type') == 'time_update':
                 elapsed = message.get('elapsed', 0)
                 _time_elapsed = elapsed
@@ -691,6 +534,12 @@ async def entrypoint(ctx: JobContext):
                     # Note: In the current LiveKit Agents SDK, we can't easily inject
                     # system messages mid-conversation. The agent will naturally
                     # pace itself based on the duration in the initial prompt.
+            
+            elif message.get('type') == 'end_interview':
+                logger.info(f"🔴 Received end_interview signal from user (reason: {message.get('reason', 'unknown')})")
+                logger.info("🔴 Agent leaving room to close session gracefully")
+                # Disconnect the agent from the room so LiveKit can close it cleanly
+                ctx.room.disconnect()
                 
         except Exception as e:
             logger.error(f"Error processing data message: {e}")
@@ -699,9 +548,7 @@ async def entrypoint(ctx: JobContext):
     logger.info("🚀 Creating Assistant instance...")
     assistant = Assistant(
         config=_agent_config,
-        ragie_user_partition=ragie_user_partition,
         ragie_global_partition=ragie_global_partition,
-        uploaded_documents=uploaded_documents
     )
     logger.info("🚀 Starting agent session...")
     try:
