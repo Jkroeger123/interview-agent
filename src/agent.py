@@ -445,14 +445,20 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"📤 Sending session report to: {endpoint}")
             logger.info("=" * 80)
             
+            # Build payload
+            payload = {
+                "roomName": room_name,
+                "sessionReport": session_report,
+            }
+            
+            logger.info(f"📤 Payload size: {len(json.dumps(payload))} bytes")
+            logger.info(f"📤 Payload structure: roomName={room_name}, history_items={len(session_report.get('history', {}).get('items', []))}")
+            
             # Send the session report to Next.js API
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     endpoint,
-                    json={
-                        "roomName": room_name,
-                        "sessionReport": session_report,
-                    }
+                    json=payload
                 )
                 
                 if response.status_code == 200:
