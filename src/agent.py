@@ -401,14 +401,9 @@ async def entrypoint(ctx: JobContext):
             logger.info("DEBUG: Environment and Session State")
             logger.info("=" * 80)
             
-            # Debug environment variable
-            next_api_url = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
-            logger.info(f"🔍 NEXT_PUBLIC_APP_URL env var: {next_api_url}")
-            logger.info(f"🔍 Using default: {'YES (localhost)' if next_api_url == 'http://localhost:3000' else 'NO'}")
-            
-            # Debug all environment variables (first few chars of each)
-            all_env_vars = {k: v[:50] + "..." if len(v) > 50 else v for k, v in os.environ.items() if "NEXT" in k or "URL" in k}
-            logger.info(f"🔍 Related env vars: {all_env_vars}")
+            # Hardcoded API URL for now
+            next_api_url = "https://interview-app-indol.vercel.app"
+            logger.info(f"🔍 API URL (hardcoded): {next_api_url}")
             
             # Get the session history directly from the session instance
             if _session_instance is None:
