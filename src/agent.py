@@ -584,50 +584,6 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Usage: {summary}")
 
     ctx.add_shutdown_callback(log_usage)
-
-    # Initialize Tavus avatar
-    logger.info("🎭 Initializing Tavus avatar...")
-    replica_id = os.getenv("TAVUS_REPLICA_ID")
-    persona_id = os.getenv("TAVUS_PERSONA_ID")
-    logger.info(f"  - Replica ID: {replica_id[:20]}..." if replica_id else "  - Replica ID: NOT SET")
-    logger.info(f"  - Persona ID: {persona_id[:20]}..." if persona_id else "  - Persona ID: NOT SET")
-    
-    try:
-        avatar = tavus.AvatarSession(
-            replica_id=replica_id,
-            persona_id=persona_id,
-        )
-        logger.info("  - AvatarSession object created")
-        logger.info(f"  - Avatar attributes: {dir(avatar)}")
-        
-        logger.info("  - Starting avatar with session and room...")
-        logger.info(f"  - Session type: {type(session)}")
-        logger.info(f"  - Room type: {type(ctx.room)}")
-        logger.info(f"  - Room state: {ctx.room.connection_state}")
-        
-        # Try to start avatar and catch any errors
-        try:
-            await avatar.start(session, room=ctx.room)
-            logger.info("✅ Tavus avatar.start() completed")
-        except Exception as start_error:
-            logger.error(f"❌ ERROR during avatar.start(): {start_error}")
-            logger.error(f"❌ Start error traceback: {traceback.format_exc()}")
-            raise
-        
-        # Check if avatar published tracks
-        logger.info("  - Checking if Tavus published video track...")
-        logger.info(f"  - Avatar conversation_id: {avatar.conversation_id if hasattr(avatar, 'conversation_id') else 'N/A'}")
-        
-        # Wait a moment for Tavus to publish tracks
-        await asyncio.sleep(2)
-        logger.info("  - Waited 2s for Tavus to publish tracks")
-        
-        logger.info("✅ Tavus avatar initialized and started successfully")
-        
-    except Exception as e:
-        logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
-        raise
     
     # Listen for time updates from frontend
     @ctx.room.on("data_received")
@@ -674,8 +630,43 @@ async def entrypoint(ctx: JobContext):
         config=_agent_config,
         ragie_global_partition=ragie_global_partition,
     )
-    logger.info("🚀 Starting agent session...")
-    logger.info(f"  - Session type: {type(session)}")
+    
+    # Initialize and start Tavus avatar BEFORE starting the session (critical order!)
+    logger.info("🎭 Initializing Tavus avatar...")
+    replica_id = os.getenv("TAVUS_REPLICA_ID")
+    persona_id = os.getenv("TAVUS_PERSONA_ID")
+    logger.info(f"  - Replica ID: {replica_id[:20]}..." if replica_id else "  - Replica ID: NOT SET")
+    logger.info(f"  - Persona ID: {persona_id[:20]}..." if persona_id else "  - Persona ID: NOT SET")
+    
+    try:
+        avatar = tavus.AvatarSession(
+            replica_id=replica_id,
+            persona_id=persona_id,
+        )
+        logger.info("  - AvatarSession object created")
+        
+        logger.info("  - Starting avatar (BEFORE session.start per docs)...")
+        logger.info(f"  - Session type: {type(session)}")
+        logger.info(f"  - Room type: {type(ctx.room)}")
+        logger.info(f"  - Room state: {ctx.room.connection_state}")
+        
+        # Start avatar FIRST (per Tavus docs)
+        await avatar.start(session, room=ctx.room)
+        logger.info("✅ Tavus avatar.start() completed")
+        
+        # Wait a moment for Tavus to publish tracks
+        await asyncio.sleep(1)
+        logger.info("  - Waited 1s for Tavus to join and publish tracks")
+        
+        logger.info("✅ Tavus avatar initialized and started successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        raise
+    
+    # NOW start the agent session (AFTER avatar is ready)
+    logger.info("🚀 Starting agent session (AFTER avatar is ready)...")
     try:
         await session.start(
             agent=assistant,
