@@ -653,9 +653,7 @@ async def entrypoint(ctx: JobContext):
         ragie_global_partition=ragie_global_partition,
     )
     logger.info("🚀 Starting agent session...")
-    logger.info(f"  - Session STT: {session._opts.stt if hasattr(session, '_opts') else 'unknown'}")
-    logger.info(f"  - Session TTS: {session._opts.tts if hasattr(session, '_opts') else 'unknown'}")
-    logger.info(f"  - Session LLM: {session._opts.llm if hasattr(session, '_opts') else 'unknown'}")
+    logger.info(f"  - Session type: {type(session)}")
     try:
         await session.start(
             agent=assistant,
@@ -665,7 +663,6 @@ async def entrypoint(ctx: JobContext):
             ),
         )
         logger.info("✅ Agent session started successfully")
-        logger.info(f"  - Session state after start: {session._state if hasattr(session, '_state') else 'unknown'}")
     except Exception as e:
         logger.error(f"❌ ERROR starting agent session: {e}")
         logger.error(f"❌ Exception type: {type(e)}")
