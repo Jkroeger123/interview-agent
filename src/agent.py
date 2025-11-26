@@ -598,10 +598,20 @@ async def entrypoint(ctx: JobContext):
             persona_id=persona_id,
         )
         logger.info("  - AvatarSession object created")
+        logger.info(f"  - Avatar attributes: {dir(avatar)}")
         
+        logger.info("  - Starting avatar with session and room...")
         await avatar.start(session, room=ctx.room)
         logger.info("✅ Tavus avatar initialized and started successfully")
-        logger.info(f"  - Avatar state: {avatar._state if hasattr(avatar, '_state') else 'unknown'}")
+        
+        # Check if video track was published
+        logger.info(f"  - Checking room tracks after avatar start...")
+        logger.info(f"  - Local participant: {ctx.room.local_participant.identity}")
+        logger.info(f"  - Local tracks count: {len(ctx.room.local_participant.track_publications)}")
+        
+        for track_sid, publication in ctx.room.local_participant.track_publications.items():
+            logger.info(f"    - Track: {publication.kind} | source: {publication.source} | sid: {track_sid}")
+        
     except Exception as e:
         logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
@@ -698,6 +708,12 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"  - Local participant: {ctx.room.local_participant.identity if ctx.room.local_participant else 'None'}")
     logger.info(f"  - Remote participants: {len(ctx.room.remote_participants)}")
     logger.info(f"  - Connection state: {ctx.room.connection_state}")
+    
+    # Re-check tracks after connection
+    logger.info(f"🔍 Tracks after connection:")
+    logger.info(f"  - Local tracks count: {len(ctx.room.local_participant.track_publications)}")
+    for track_sid, publication in ctx.room.local_participant.track_publications.items():
+        logger.info(f"    - Track: {publication.kind} | source: {publication.source} | sid: {track_sid}")
     
     # Generate initial greeting
     visa_code = _agent_config.get('visaCode', 'visa')
