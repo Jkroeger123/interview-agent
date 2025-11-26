@@ -446,10 +446,32 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"📤 Sending session report to: {endpoint}")
             logger.info("=" * 80)
             
+            # Try to extract interview ID from room name (format: interview_user_xxx_yyy)
+            interview_id = None
+            if "_" in room_name:
+                parts = room_name.split("_")
+                if len(parts) >= 4:
+                    interview_id = parts[-1]
+            
+            # Build expected S3 URL for recording
+            # Format: https://{bucket}.s3.{region}.amazonaws.com/interviews/{interviewId}.mp4
+            expected_recording_url = None
+            if interview_id:
+                # Get S3 bucket and region from environment
+                s3_bucket = os.getenv("AWS_S3_BUCKET", "vysa-interview-recordings")
+                s3_region = os.getenv("AWS_S3_REGION", "us-east-1")
+                expected_recording_url = f"https://{s3_bucket}.s3.{s3_region}.amazonaws.com/interviews/{interview_id}.mp4"
+                logger.info(f"📹 Expected recording URL: {expected_recording_url}")
+            
             # Build payload
             payload = {
                 "roomName": room_name,
                 "sessionReport": session_report,
+                "recordingInfo": {
+                    "interviewId": interview_id,
+                    "expectedRecordingUrl": expected_recording_url,
+                    "note": "Recording may take 1-2 minutes to process and upload to S3"
+                } if interview_id else None,
             }
             
             logger.info(f"📤 Payload size: {len(json.dumps(payload))} bytes")
