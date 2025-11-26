@@ -419,7 +419,15 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"📊 Session report generated for room: {ctx.room.name}")
             logger.info(f"📊 Report contains {len(history_dict.get('items', []))} conversation items")
             logger.info(f"🔍 History dict keys: {history_dict.keys()}")
-            logger.info(f"🔍 First 2 items: {history_dict.get('items', [])[:2]}")
+            
+            # Log ALL items to see what's there
+            all_items = history_dict.get('items', [])
+            logger.info(f"🔍 Total items: {len(all_items)}")
+            for idx, item in enumerate(all_items):
+                logger.info(f"🔍 Item {idx}: type={item.get('type')}, role={item.get('role')}, has_content={bool(item.get('content'))}")
+            
+            # Log first 2 items in detail
+            logger.info(f"🔍 First 2 items (detailed): {all_items[:2]}")
             
             # Build session report structure
             session_report = {
