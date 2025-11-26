@@ -9,7 +9,6 @@ import httpx
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
-    AgentServer,
     AgentSession,
     AudioConfig,
     BackgroundAudioPlayer,
@@ -386,12 +385,59 @@ def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
-async def _original_entrypoint_impl(ctx: JobContext):
-    """Original entrypoint implementation - called by the decorated entrypoint"""
+async def entrypoint(ctx: JobContext):
+    """Main entrypoint for the agent with session reporting enabled"""
     global _agent_config, _session_instance, _room_context, _start_time, _time_elapsed
     
     # Store room context for tool access
     _room_context = ctx
+    
+    # Register session end callback to capture transcript
+    async def send_session_report():
+        """Send session report to Next.js API when session ends"""
+        try:
+            logger.info("📊 Session ended, generating session report...")
+            
+            # Get the full session report from LiveKit
+            report = ctx.make_session_report()
+            report_dict = report.to_dict()
+            
+            logger.info(f"📊 Session report generated for room: {ctx.room.name}")
+            logger.info(f"📊 Report contains {len(report_dict.get('history', {}).get('items', []))} conversation items")
+            
+            # Extract interview ID from room name
+            room_name = ctx.room.name
+            
+            # Get the Next.js API URL from environment
+            next_api_url = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            endpoint = f"{next_api_url}/api/interviews/session-report"
+            
+            logger.info(f"📤 Sending session report to: {endpoint}")
+            
+            # Send the session report to Next.js API
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    endpoint,
+                    json={
+                        "roomName": room_name,
+                        "sessionReport": report_dict,
+                    }
+                )
+                
+                if response.status_code == 200:
+                    logger.info("✅ Session report successfully sent to API")
+                else:
+                    logger.error(f"❌ Failed to send session report. Status: {response.status_code}")
+                    logger.error(f"❌ Response: {response.text}")
+        
+        except Exception as e:
+            logger.error(f"❌ Error sending session report: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            # Don't raise - we don't want to break the session cleanup
+    
+    # Add the session report callback
+    ctx.add_shutdown_callback(send_session_report)
     
     ctx.log_context_fields = {"room": ctx.room.name}
     
@@ -590,65 +636,6 @@ async def _original_entrypoint_impl(ctx: JobContext):
     session.generate_reply(
         instructions=f"Greet the applicant briefly for their {visa_code} visa interview and ask your first question from the question bank. Be direct and slightly impatient, as you have many applicants to process today."
     )
-
-
-async def on_session_end(ctx: JobContext) -> None:
-    """
-    Called when the agent session ends. Captures the full session report
-    including conversation history, transcripts, and metadata, then sends
-    it to the Next.js API for processing and storage.
-    """
-    try:
-        logger.info("📊 Session ended, generating session report...")
-        
-        # Get the full session report from LiveKit
-        report = ctx.make_session_report()
-        report_dict = report.to_dict()
-        
-        logger.info(f"📊 Session report generated for room: {ctx.room.name}")
-        logger.info(f"📊 Report contains {len(report_dict.get('history', {}).get('items', []))} conversation items")
-        
-        # Extract interview ID from room name (format: interview_user_clerkId_randomId)
-        room_name = ctx.room.name
-        
-        # Get the Next.js API URL from environment
-        next_api_url = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
-        endpoint = f"{next_api_url}/api/interviews/session-report"
-        
-        logger.info(f"📤 Sending session report to: {endpoint}")
-        
-        # Send the session report to Next.js API
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                endpoint,
-                json={
-                    "roomName": room_name,
-                    "sessionReport": report_dict,
-                }
-            )
-            
-            if response.status_code == 200:
-                logger.info("✅ Session report successfully sent to API")
-            else:
-                logger.error(f"❌ Failed to send session report. Status: {response.status_code}")
-                logger.error(f"❌ Response: {response.text}")
-    
-    except Exception as e:
-        logger.error(f"❌ Error in on_session_end: {e}")
-        import traceback
-        logger.error(f"❌ Traceback: {traceback.format_exc()}")
-        # Don't raise - we don't want to break the session cleanup
-
-
-# Create the agent server with session end callback
-server = AgentServer()
-
-
-@server.rtc_session(on_session_end=on_session_end)
-async def entrypoint(ctx: JobContext):
-    """Main entrypoint for the agent with session reporting enabled"""
-    # Call the original entrypoint logic
-    await _original_entrypoint_impl(ctx)
 
 
 if __name__ == "__main__":
