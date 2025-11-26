@@ -397,17 +397,34 @@ async def entrypoint(ctx: JobContext):
         """Send session report to Next.js API when session ends"""
         try:
             logger.info("📊 Session ended, generating session report...")
+            logger.info("=" * 80)
+            logger.info("DEBUG: Environment and Session State")
+            logger.info("=" * 80)
+            
+            # Debug environment variable
+            next_api_url = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
+            logger.info(f"🔍 NEXT_PUBLIC_APP_URL env var: {next_api_url}")
+            logger.info(f"🔍 Using default: {'YES (localhost)' if next_api_url == 'http://localhost:3000' else 'NO'}")
+            
+            # Debug all environment variables (first few chars of each)
+            all_env_vars = {k: v[:50] + "..." if len(v) > 50 else v for k, v in os.environ.items() if "NEXT" in k or "URL" in k}
+            logger.info(f"🔍 Related env vars: {all_env_vars}")
             
             # Get the session history directly from the session instance
             if _session_instance is None:
                 logger.error("❌ Session instance is None, cannot get history")
                 return
             
+            logger.info(f"🔍 Session instance type: {type(_session_instance)}")
+            logger.info(f"🔍 Session instance attributes: {dir(_session_instance.history)}")
+            
             # Convert session history to dict
             history_dict = _session_instance.history.to_dict()
             
             logger.info(f"📊 Session report generated for room: {ctx.room.name}")
             logger.info(f"📊 Report contains {len(history_dict.get('items', []))} conversation items")
+            logger.info(f"🔍 History dict keys: {history_dict.keys()}")
+            logger.info(f"🔍 First 2 items: {history_dict.get('items', [])[:2]}")
             
             # Build session report structure
             session_report = {
@@ -420,10 +437,10 @@ async def entrypoint(ctx: JobContext):
             room_name = ctx.room.name
             
             # Get the Next.js API URL from environment
-            next_api_url = os.getenv("NEXT_PUBLIC_APP_URL", "http://localhost:3000")
             endpoint = f"{next_api_url}/api/interviews/session-report"
             
             logger.info(f"📤 Sending session report to: {endpoint}")
+            logger.info("=" * 80)
             
             # Send the session report to Next.js API
             async with httpx.AsyncClient(timeout=30.0) as client:
