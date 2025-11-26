@@ -558,7 +558,7 @@ async def entrypoint(ctx: JobContext):
     
     # Listen for time updates from frontend
     @ctx.room.on("data_received")
-    async def on_data_received(packet):
+    def on_data_received(packet):
         global _time_elapsed, _start_time
         
         try:
@@ -589,7 +589,8 @@ async def entrypoint(ctx: JobContext):
                 logger.info(f"🔴 Received end_interview signal from user (reason: {message.get('reason', 'unknown')})")
                 logger.info("🔴 Agent leaving room to close session gracefully")
                 # Disconnect the agent from the room so LiveKit can close it cleanly
-                await ctx.room.disconnect()
+                # Use asyncio.create_task since this is a sync callback
+                asyncio.create_task(ctx.room.disconnect())
                 
         except Exception as e:
             logger.error(f"Error processing data message: {e}")
