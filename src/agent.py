@@ -398,12 +398,23 @@ async def entrypoint(ctx: JobContext):
         try:
             logger.info("📊 Session ended, generating session report...")
             
-            # Get the full session report from LiveKit
-            report = ctx.make_session_report()
-            report_dict = report.to_dict()
+            # Get the session history directly from the session instance
+            if _session_instance is None:
+                logger.error("❌ Session instance is None, cannot get history")
+                return
+            
+            # Convert session history to dict
+            history_dict = _session_instance.history.to_dict()
             
             logger.info(f"📊 Session report generated for room: {ctx.room.name}")
-            logger.info(f"📊 Report contains {len(report_dict.get('history', {}).get('items', []))} conversation items")
+            logger.info(f"📊 Report contains {len(history_dict.get('items', []))} conversation items")
+            
+            # Build session report structure
+            session_report = {
+                "room_name": ctx.room.name,
+                "history": history_dict,
+                "timestamp": datetime.now().isoformat(),
+            }
             
             # Extract interview ID from room name
             room_name = ctx.room.name
@@ -420,7 +431,7 @@ async def entrypoint(ctx: JobContext):
                     endpoint,
                     json={
                         "roomName": room_name,
-                        "sessionReport": report_dict,
+                        "sessionReport": session_report,
                     }
                 )
                 
