@@ -604,14 +604,6 @@ async def entrypoint(ctx: JobContext):
         await avatar.start(session, room=ctx.room)
         logger.info("✅ Tavus avatar initialized and started successfully")
         
-        # Check if video track was published
-        logger.info(f"  - Checking room tracks after avatar start...")
-        logger.info(f"  - Local participant: {ctx.room.local_participant.identity}")
-        logger.info(f"  - Local tracks count: {len(ctx.room.local_participant.track_publications)}")
-        
-        for track_sid, publication in ctx.room.local_participant.track_publications.items():
-            logger.info(f"    - Track: {publication.kind} | source: {publication.source} | sid: {track_sid}")
-        
     except Exception as e:
         logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
