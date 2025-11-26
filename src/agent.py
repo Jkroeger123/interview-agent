@@ -601,7 +601,27 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"  - Avatar attributes: {dir(avatar)}")
         
         logger.info("  - Starting avatar with session and room...")
-        await avatar.start(session, room=ctx.room)
+        logger.info(f"  - Session type: {type(session)}")
+        logger.info(f"  - Room type: {type(ctx.room)}")
+        logger.info(f"  - Room state: {ctx.room.connection_state}")
+        
+        # Try to start avatar and catch any errors
+        try:
+            await avatar.start(session, room=ctx.room)
+            logger.info("✅ Tavus avatar.start() completed")
+        except Exception as start_error:
+            logger.error(f"❌ ERROR during avatar.start(): {start_error}")
+            logger.error(f"❌ Start error traceback: {traceback.format_exc()}")
+            raise
+        
+        # Check if avatar published tracks
+        logger.info("  - Checking if Tavus published video track...")
+        logger.info(f"  - Avatar conversation_id: {avatar.conversation_id if hasattr(avatar, 'conversation_id') else 'N/A'}")
+        
+        # Wait a moment for Tavus to publish tracks
+        await asyncio.sleep(2)
+        logger.info("  - Waited 2s for Tavus to publish tracks")
+        
         logger.info("✅ Tavus avatar initialized and started successfully")
         
     except Exception as e:
