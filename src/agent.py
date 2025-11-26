@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import traceback
 from typing import Optional
 from datetime import datetime
 import httpx
@@ -585,13 +586,26 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(log_usage)
 
     # Initialize Tavus avatar
-    logger.info("Initializing Tavus avatar...")
-    avatar = tavus.AvatarSession(
-        replica_id=os.getenv("TAVUS_REPLICA_ID"),
-        persona_id=os.getenv("TAVUS_PERSONA_ID"),
-    )
-    await avatar.start(session, room=ctx.room)
-    logger.info("✅ Tavus avatar initialized successfully")
+    logger.info("🎭 Initializing Tavus avatar...")
+    replica_id = os.getenv("TAVUS_REPLICA_ID")
+    persona_id = os.getenv("TAVUS_PERSONA_ID")
+    logger.info(f"  - Replica ID: {replica_id[:20]}..." if replica_id else "  - Replica ID: NOT SET")
+    logger.info(f"  - Persona ID: {persona_id[:20]}..." if persona_id else "  - Persona ID: NOT SET")
+    
+    try:
+        avatar = tavus.AvatarSession(
+            replica_id=replica_id,
+            persona_id=persona_id,
+        )
+        logger.info("  - AvatarSession object created")
+        
+        await avatar.start(session, room=ctx.room)
+        logger.info("✅ Tavus avatar initialized and started successfully")
+        logger.info(f"  - Avatar state: {avatar._state if hasattr(avatar, '_state') else 'unknown'}")
+    except Exception as e:
+        logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        raise
     
     # Listen for time updates from frontend
     @ctx.room.on("data_received")
@@ -639,6 +653,9 @@ async def entrypoint(ctx: JobContext):
         ragie_global_partition=ragie_global_partition,
     )
     logger.info("🚀 Starting agent session...")
+    logger.info(f"  - Session STT: {session._opts.stt if hasattr(session, '_opts') else 'unknown'}")
+    logger.info(f"  - Session TTS: {session._opts.tts if hasattr(session, '_opts') else 'unknown'}")
+    logger.info(f"  - Session LLM: {session._opts.llm if hasattr(session, '_opts') else 'unknown'}")
     try:
         await session.start(
             agent=assistant,
@@ -648,10 +665,10 @@ async def entrypoint(ctx: JobContext):
             ),
         )
         logger.info("✅ Agent session started successfully")
+        logger.info(f"  - Session state after start: {session._state if hasattr(session, '_state') else 'unknown'}")
     except Exception as e:
         logger.error(f"❌ ERROR starting agent session: {e}")
         logger.error(f"❌ Exception type: {type(e)}")
-        import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise
 
@@ -667,13 +684,36 @@ async def entrypoint(ctx: JobContext):
     logger.info("✅ Background audio player started")
 
     await ctx.connect()
+    logger.info("✅ Connected to room successfully")
+    
+    # Wait a moment for participants to join
+    logger.info("⏳ Waiting for user participant to join...")
+    try:
+        await ctx.wait_for_participant()
+        logger.info("✅ User participant joined")
+    except Exception as e:
+        logger.warning(f"⚠️ wait_for_participant timeout or error: {e}")
+        logger.warning("⚠️ Continuing anyway...")
+    
+    # Check room state before generating greeting
+    logger.info(f"🔍 Room state before greeting:")
+    logger.info(f"  - Room name: {ctx.room.name}")
+    logger.info(f"  - Local participant: {ctx.room.local_participant.identity if ctx.room.local_participant else 'None'}")
+    logger.info(f"  - Remote participants: {len(ctx.room.remote_participants)}")
+    logger.info(f"  - Connection state: {ctx.room.connection_state}")
     
     # Generate initial greeting
     visa_code = _agent_config.get('visaCode', 'visa')
-    logger.info(f"Generating initial greeting for {visa_code} interview")
-    session.generate_reply(
-        instructions=f"Greet the applicant briefly for their {visa_code} visa interview and ask your first question from the question bank. Be direct and slightly impatient, as you have many applicants to process today."
-    )
+    logger.info(f"🎤 Generating initial greeting for {visa_code} interview...")
+    try:
+        session.generate_reply(
+            instructions=f"Greet the applicant briefly for their {visa_code} visa interview and ask your first question from the question bank. Be direct and slightly impatient, as you have many applicants to process today."
+        )
+        logger.info("✅ Greeting generation initiated successfully")
+    except Exception as e:
+        logger.error(f"❌ Error generating greeting: {e}")
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        raise
 
 
 if __name__ == "__main__":
