@@ -21,10 +21,11 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     metrics,
+    llm,
 )
 from livekit.agents.llm import function_tool
 from livekit.agents import inference
-from livekit.plugins import elevenlabs, noise_cancellation, silero, liveavatar
+from livekit.plugins import elevenlabs, noise_cancellation, silero, liveavatar, openai
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
@@ -42,6 +43,83 @@ _conversation_history = []  # Track conversation with timestamps
 _last_message_time = 0.0  # Track when the last message ended
 _last_user_speech_time = None  # Track when user last spoke
 _silence_warnings_given = 0  # Count of silence warnings
+_uploaded_files = []  # Files uploaded for this interview session
+
+
+# Pre-processed document content for the current session
+_document_context: str = ""
+
+
+async def process_documents_for_context(files: list) -> str:
+    """
+    Process uploaded PDF documents and extract text for LLM context.
+    
+    Uses pypdf to extract text from PDFs, which is then included in the system prompt.
+    This way the LLM "knows" the document content for the entire interview.
+    
+    Returns:
+        document_context_string with extracted PDF text
+    """
+    if not files:
+        return ""
+    
+    document_texts = []
+    
+    async with httpx.AsyncClient() as http_client:
+        for f in files:
+            try:
+                file_name = f.get('name', 'unknown')
+                file_type = f.get('type', '')
+                file_url = f.get('url', '')
+                
+                logger.info(f"📥 Processing file: {file_name} ({file_type})")
+                
+                # Fetch the file
+                response = await http_client.get(file_url, timeout=60.0)
+                response.raise_for_status()
+                file_data = response.content
+                
+                if file_type == 'application/pdf':
+                    # PDFs - extract text using pypdf
+                    logger.info(f"📄 Extracting text from PDF: {file_name}")
+                    
+                    try:
+                        import io
+                        from pypdf import PdfReader
+                        
+                        # Parse PDF and extract all text
+                        pdf_file = io.BytesIO(file_data)
+                        reader = PdfReader(pdf_file)
+                        
+                        extracted_text = ""
+                        for page_num, page in enumerate(reader.pages, 1):
+                            page_text = page.extract_text()
+                            if page_text:
+                                extracted_text += f"\n[Page {page_num}]\n{page_text}\n"
+                        
+                        if extracted_text.strip():
+                            document_texts.append(f"\n\n--- DOCUMENT: {file_name} ---\n{extracted_text}\n--- END OF {file_name} ---\n")
+                            logger.info(f"✅ Extracted {len(extracted_text)} chars from PDF ({len(reader.pages)} pages): {file_name}")
+                        else:
+                            logger.warning(f"⚠️ PDF has no extractable text (might be scanned/image): {file_name}")
+                            document_texts.append(f"\n\n--- DOCUMENT: {file_name} (PDF - no text found) ---\nThis PDF appears to be scanned or image-based. Ask the applicant about its contents.\n--- END OF {file_name} ---\n")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ Error parsing PDF {file_name}: {e}")
+                        document_texts.append(f"\n\n--- DOCUMENT: {file_name} (PDF - parse error) ---\nUnable to parse this PDF. Ask the applicant about its contents.\n--- END OF {file_name} ---\n")
+                else:
+                    logger.warning(f"⚠️ Unsupported file type: {file_name} ({file_type})")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error processing file {f.get('name')}: {e}")
+                continue
+    
+    # Combine all document texts
+    combined_context = ""
+    if document_texts:
+        combined_context = "\n\n=== APPLICANT'S UPLOADED DOCUMENTS ===\nThe following documents were uploaded by the applicant. Use this information to ask informed questions and verify their verbal responses.\n" + "".join(document_texts)
+    
+    return combined_context
 
 
 class Assistant(Agent):
@@ -235,7 +313,9 @@ VISA TYPE: {config.get('visaCode', 'Unknown')} - {config.get('visaName', 'Unknow
 """
         
         # Add document context if available
-        document_context = config.get('documentContext', '')
+        # Use global _document_context (populated from uploaded files) or config.documentContext
+        global _document_context
+        document_context = _document_context or config.get('documentContext', '')
         doc_context_text = ""
         if document_context:
             doc_context_text = f"""
@@ -315,13 +395,30 @@ TIME MANAGEMENT:
 - Prioritize depth over breadth based on interview level above
 """
         
+        # Build uploaded files context
+        files = config.get('files', [])
+        uploaded_files_text = ""
+        if files:
+            file_list = ", ".join([f['name'] for f in files])
+            uploaded_files_text = f"""
+UPLOADED DOCUMENTS:
+The applicant has uploaded the following documents: {file_list}
+
+These documents have been provided to you in your context - you can see them directly!
+- Reference specific details from these documents in your questions
+- Verify information the applicant provides against what you see in their documents
+- Ask follow-up questions based on document contents
+- Note any discrepancies between what they say and what's in their documents
+"""
+        
         # Add interview strategy guidance
-        doc_text = """
+        doc_text = f"""
 AVAILABLE TOOLS:
 
 1. get_relevant_questions: Fetch specific questions for a topic (e.g., "financial", "academic", "ties to home country")
 2. lookup_reference_documents: Search official visa guidelines and requirements
 3. end_interview: End the session (NO PARAMETERS - you must say goodbye in conversation FIRST, then call this)
+{uploaded_files_text}
 
 INTERVIEW STRATEGY - CRITICAL GUIDELINES:
 
@@ -550,17 +647,21 @@ Step 2 (Next Turn - AFTER they respond):
             return "Unable to properly end interview - session not found"
 
 
+# fetch_and_prepare_files has been replaced by process_documents_for_context above
+
+
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 
 async def entrypoint(ctx: JobContext):
     """Main entrypoint for the agent with session reporting enabled"""
-    global _agent_config, _session_instance, _room_context, _start_time, _time_elapsed, _conversation_history, _last_message_time, _last_user_speech_time, _silence_warnings_given
+    global _agent_config, _session_instance, _room_context, _start_time, _time_elapsed, _conversation_history, _last_message_time, _last_user_speech_time, _silence_warnings_given, _uploaded_files
     
     # Initialize silence tracking
     _last_user_speech_time = None
     _silence_warnings_given = 0
+    _uploaded_files = []  # Reset uploaded files for new session
     
     # Store room context for tool access
     _room_context = ctx
@@ -766,6 +867,14 @@ async def entrypoint(ctx: JobContext):
             ragie_global_partition = _agent_config.get('ragieGlobalPartition', 'visa-student')
             logger.info(f"✅ Ragie global partition: {ragie_global_partition}")
             
+            # Load uploaded files for direct LLM context
+            files = _agent_config.get('files', [])
+            if files:
+                _uploaded_files = files
+                logger.info(f"📄 Loaded {len(files)} uploaded files for LLM context:")
+                for f in files:
+                    logger.info(f"   - {f.get('name')} ({f.get('type')})")
+            
         except json.JSONDecodeError as e:
             logger.error(f"❌ Failed to parse room metadata: {e}")
             logger.error(f"❌ Raw metadata: {ctx.job.room.metadata[:200]}")  # First 200 chars
@@ -810,14 +919,25 @@ async def entrypoint(ctx: JobContext):
         stt_model = "deepgram/nova-3:multi"
         logger.info(f"🎤 STT model: {stt_model} (multilingual with language switching)")
     
+    # Process uploaded PDF documents for LLM context
+    # Text is extracted via pypdf and included in the system prompt
+    global _document_context
+    _document_context = ""
+    
+    if _uploaded_files:
+        logger.info(f"📄 Processing {len(_uploaded_files)} uploaded files...")
+        _document_context = await process_documents_for_context(_uploaded_files)
+        logger.info(f"✅ Processed documents: {len(_document_context)} chars context")
+    
+    # Create agent session with standard LLM
     session = AgentSession(
         stt=stt_model,
-        llm="openai/gpt-4.1",
+        llm="openai/gpt-4o",
         tts=tts_instance,
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
-        use_tts_aligned_transcript=True,  # Enable timing information
+        use_tts_aligned_transcript=True,
     )
 
     _session_instance = session
