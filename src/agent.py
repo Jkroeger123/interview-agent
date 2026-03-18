@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import traceback
-from typing import Optional
+from typing import Optional, AsyncIterable, AsyncGenerator
 from datetime import datetime
 import httpx
 
@@ -24,7 +24,7 @@ from livekit.agents import (
 )
 from livekit.agents.llm import function_tool
 from livekit.agents import inference
-from livekit.plugins import elevenlabs, noise_cancellation, silero, tavus
+from livekit.plugins import elevenlabs, noise_cancellation, silero, liveavatar
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
@@ -38,6 +38,10 @@ _session_instance = None
 _room_context = None
 _start_time = None
 _time_elapsed = 0
+_conversation_history = []  # Track conversation with timestamps
+_last_message_time = 0.0  # Track when the last message ended
+_last_user_speech_time = None  # Track when user last spoke
+_silence_warnings_given = 0  # Count of silence warnings
 
 
 class Assistant(Agent):
@@ -62,6 +66,45 @@ class Assistant(Agent):
         super().__init__(instructions=instructions)
         logger.info("✅ Assistant initialized successfully")
     
+    async def transcription_node(
+        self, text: AsyncIterable, model_settings
+    ) -> AsyncGenerator:
+        """Capture timing information from TTS-aligned transcriptions"""
+        global _conversation_history, _time_elapsed
+        
+        collected_text = ""
+        start_time_val = None
+        end_time_val = None
+        
+        async for chunk in text:
+            # Check if chunk has timing attributes (duck typing instead of isinstance)
+            if hasattr(chunk, 'start_time') and hasattr(chunk, 'end_time'):
+                # Track timing from timed string objects
+                if start_time_val is None:
+                    start_time_val = chunk.start_time
+                end_time_val = chunk.end_time
+                collected_text += str(chunk)
+                logger.info(f"📝 Timed chunk: '{chunk}' ({chunk.start_time:.2f}s - {chunk.end_time:.2f}s)")
+            else:
+                # Regular string chunk
+                collected_text += str(chunk)
+            
+            yield chunk
+        
+        # After collecting the full message, add to history
+        if collected_text and start_time_val is not None and end_time_val is not None:
+            # Calculate absolute time since interview start
+            elapsed_start = (_time_elapsed if _time_elapsed else 0) + start_time_val
+            elapsed_end = (_time_elapsed if _time_elapsed else 0) + end_time_val
+            
+            _conversation_history.append({
+                "role": "assistant",
+                "text": collected_text.strip(),
+                "start_time": elapsed_start,
+                "end_time": elapsed_end,
+            })
+            logger.info(f"📊 Tracked agent message: {collected_text[:50]}... ({elapsed_start:.1f}s - {elapsed_end:.1f}s)")
+    
     def _build_instructions(self, config: dict) -> str:
         """Build dynamic system prompt based on interview configuration"""
         
@@ -69,11 +112,9 @@ class Assistant(Agent):
         example_transcript = """
 EXAMPLE INTERVIEW (match this professional, direct tone - don't need to follow exactly just an idea of a vibe):
 
-Officer: Good morning.
-Applicant: Good morning, officer.
-Officer: Please give me your full name.
+Officer: Hello. Please state your name for the record.
 Applicant: My name is Anand Gur.
-Officer: Nice to meet you, Anand. I'm going to ask you a few questions regarding your application to study in the United States. Please tell me — why do you want to study in the United States?
+Officer: Thank you, Anand. I'm going to ask you a few questions regarding your application to study in the United States. Please tell me — why do you want to study in the United States?
 Applicant: Officer, I decided to study in the United States because of the excellent reputation of an American degree internationally. I'm a student of Hospitality and Tourism Management, and the U.S. has one of the biggest hospitality sectors in the world.
 Officer: Very good. What got you interested in this field of study?
 Applicant: After completing high school, I was exploring what course would suit me best. I found that hospitality was the right fit for my interests.
@@ -94,13 +135,85 @@ Officer: Very good, excellent. Based on your answers today, I'm happy to grant y
 IMPORTANT: Match this officer's tone - professional, efficient, direct. Use phrases like "Very good," ask follow-up questions naturally, and keep responses brief.
 """
         
+        # Get interview language
+        interview_language = config.get('interviewLanguage', 'en')
+        
+        # Language mapping for human-readable names
+        language_names = {
+            'en': 'English',
+            'es': 'Spanish (Español)',
+            'fr': 'French (Français)',
+            'hi': 'Hindi (हिंदी)',
+            'ar': 'Arabic (العربية)',
+            'zh': 'Chinese (中文)',
+            'pt': 'Portuguese (Português)',
+            'de': 'German (Deutsch)',
+            'ja': 'Japanese (日本語)',
+            'ko': 'Korean (한국어)',
+        }
+        
+        language_name = language_names.get(interview_language, 'English')
+        
+        # Check for dual participant interview (marriage/fiance visa)
+        is_dual_participant = config.get('isDualParticipant', False)
+        participant1_name = config.get('participant1Name', '')
+        participant2_name = config.get('participant2Name', '')
+        
+        # Debug logging for dual participant
+        logger.info(f"👥 DUAL PARTICIPANT CHECK:")
+        logger.info(f"   isDualParticipant: {is_dual_participant}")
+        logger.info(f"   participant1Name: '{participant1_name}'")
+        logger.info(f"   participant2Name: '{participant2_name}'")
+        
+        # Build participant context
+        participant_context = ""
+        if is_dual_participant and participant1_name and participant2_name:
+            logger.info(f"✅ BUILDING DUAL PARTICIPANT CONTEXT for {participant1_name} and {participant2_name}")
+            participant_context = f"""
+DUAL PARTICIPANT INTERVIEW:
+This is a marriage/fiancé visa interview with TWO participants present:
+- {participant1_name} (U.S. Citizen Petitioner)
+- {participant2_name} (Foreign National Beneficiary)
+
+CRITICAL INSTRUCTIONS FOR DUAL INTERVIEWS:
+1. Address participants by name when directing questions
+2. You can ask questions to EITHER participant
+3. Direct relationship questions to both: "Tell me, {participant1_name}, how did you two meet?"
+4. Ask verification questions to each separately: "{participant2_name}, when did you first visit the United States?"
+5. Use context clues to determine who is responding:
+   - If they mention being the U.S. citizen → {participant1_name}
+   - If they mention being from another country → {participant2_name}
+   - If unclear, you can ask: "And which one of you is answering?"
+6. Test consistency: Ask similar questions to both and compare answers
+7. Assess relationship authenticity by asking both partners about shared experiences
+
+EXAMPLE DUAL INTERVIEW FLOW:
+Officer: "Good afternoon. {participant1_name} and {participant2_name}, thank you for coming today."
+Officer: "{participant1_name}, tell me, how did you two meet?"
+[{participant1_name} answers]
+Officer: "I see. {participant2_name}, can you tell me your version of how you met?"
+[{participant2_name} answers]
+Officer: "{participant2_name}, when did you first visit the United States?"
+[{participant2_name} answers]
+
+Remember: Both participants are present. You can direct questions to either one by name.
+"""
+        else:
+            if is_dual_participant or participant1_name or participant2_name:
+                logger.warning(f"⚠️ DUAL PARTICIPANT DATA INCOMPLETE:")
+                logger.warning(f"   isDualParticipant={is_dual_participant}, name1='{participant1_name}', name2='{participant2_name}'")
+        
         # Base personality
         base_instructions = f"""You are a U.S. visa officer conducting a visa interview at an embassy or consulate.
+
+{participant_context}
+
+LANGUAGE: Conduct this entire interview in {language_name}. Speak ONLY in {language_name}. Do not switch to English unless the applicant cannot understand {language_name}.
 
 TONE & STYLE:
 - Professional and courteous but businesslike
 - Direct and efficient with questions
-- Use phrases like "Very good," "I see," "Tell me..."
+- Use phrases like "Very good," "I see," "Tell me..." (in {language_name})
 - Keep responses brief (1-2 sentences maximum)
 - No emojis, asterisks, or formatting symbols
 - Speak naturally as in a real interview
@@ -121,6 +234,20 @@ VISA TYPE: {config.get('visaCode', 'Unknown')} - {config.get('visaName', 'Unknow
 {config.get('agentPromptContext', '')}
 """
         
+        # Add document context if available
+        document_context = config.get('documentContext', '')
+        doc_context_text = ""
+        if document_context:
+            doc_context_text = f"""
+{document_context}
+
+IMPORTANT: Use this document information to:
+- Ask informed follow-up questions
+- Verify consistency between what they say and what's in their documents
+- Reference specific details from their documents naturally
+- Note any discrepancies or concerns
+"""
+        
         # Add focus areas if specified
         focus_areas = config.get('focusAreaLabels', [])
         focus_text = ""
@@ -138,13 +265,54 @@ QUESTION TOPICS TO COVER:
 Use the get_relevant_questions tool to fetch specific questions for any topic as needed during the interview.
 """
         
-        # Add duration awareness
-        duration = config.get('duration', 20)
+        # Add duration and depth awareness
+        duration = config.get('durationMinutes', 20)
+        depth = config.get('depth', 'moderate')  # 'surface', 'moderate', 'comprehensive'
+        
+        # Depth-specific instructions
+        depth_instructions = {
+            'surface': """
+INTERVIEW LEVEL: BASIC (Surface-Level)
+- Ask only high-level, essential questions
+- Cover key topics quickly and efficiently
+- Don't probe deeply unless answer raises immediate red flag
+- Focus on: identity, purpose of visit, basic eligibility
+- Aim for 3-5 questions per major topic area
+- Target duration: ~5 minutes
+""",
+            'moderate': """
+INTERVIEW LEVEL: STANDARD (Surface + Selective Deep Dive)
+- Start with surface-level questions across all key topics
+- Then choose 1-2 areas that need deeper exploration based on:
+  * User's responses that seem unclear or inconsistent
+  * Critical areas for this visa type (e.g., financial for F-1, ties for B-2)
+- Deep dive means: Ask 5-8 follow-up questions in those 1-2 areas
+- Other areas: Keep at surface level (2-3 questions)
+- Target duration: ~10 minutes
+""",
+            'comprehensive': """
+INTERVIEW LEVEL: IN-DEPTH (Comprehensive)
+- Thoroughly explore ALL major sections of the question bank
+- For EACH major topic area, ask:
+  * Initial surface questions (2-3)
+  * Follow-up probing questions (4-6)
+  * Verification questions if answers are vague
+- Cover: Purpose, Financial, Academic/Work, Ties, Intent to Return, Documentation
+- This is the most rigorous preparation - leave no stone unturned
+- Target duration: ~15 minutes
+"""
+        }
+        
+        depth_text = depth_instructions.get(depth, depth_instructions['moderate'])
+        
         duration_text = f"""
-INTERVIEW DURATION: {duration} minutes
-- Pace yourself to cover key topics within this time
-- When you receive time updates showing 80% or more of time elapsed, start wrapping up
-- Real visa interviews are brief (3-7 minutes typically) and decisive
+{depth_text}
+
+TIME MANAGEMENT:
+- Target interview length: ~{duration} minutes
+- When you receive time updates showing 80% elapsed, start wrapping up
+- Real visa interviews are brief (3-7 minutes) but thorough
+- Prioritize depth over breadth based on interview level above
 """
         
         # Add interview strategy guidance
@@ -208,7 +376,7 @@ Step 2 (Next Turn - AFTER they respond):
         # Combine all parts
         full_instructions = f"""{base_instructions}
 
-{visa_context}{focus_text}
+{visa_context}{doc_context_text}{focus_text}
 {question_text}
 {duration_text}
 {doc_text}
@@ -388,7 +556,11 @@ def prewarm(proc: JobProcess):
 
 async def entrypoint(ctx: JobContext):
     """Main entrypoint for the agent with session reporting enabled"""
-    global _agent_config, _session_instance, _room_context, _start_time, _time_elapsed
+    global _agent_config, _session_instance, _room_context, _start_time, _time_elapsed, _conversation_history, _last_message_time, _last_user_speech_time, _silence_warnings_given
+    
+    # Initialize silence tracking
+    _last_user_speech_time = None
+    _silence_warnings_given = 0
     
     # Store room context for tool access
     _room_context = ctx
@@ -396,46 +568,84 @@ async def entrypoint(ctx: JobContext):
     # Register session end callback to capture transcript
     async def send_session_report():
         """Send session report to Next.js API when session ends"""
+        
         try:
             logger.info("📊 Session ended, generating session report...")
-            logger.info("=" * 80)
-            logger.info("DEBUG: Environment and Session State")
-            logger.info("=" * 80)
+            
+            # Extract conversation history from session.history.items (LiveKit Agent SDK API)
+            conversation_items = []
+            
+            if hasattr(session, 'history') and hasattr(session.history, 'items'):
+                logger.info(f"✅ Found session.history.items")
+                logger.info(f"  Total items count: {len(session.history.items)}")
+                
+                for idx, item in enumerate(session.history.items):
+                    # Only process message items (skip function_call, function_call_output, agent_handoff)
+                    if item.type == "message":
+                        role = item.role  # "user" or "assistant"
+                        content = item.text_content  # The actual text
+                        
+                        # Try to extract timing if available
+                        start_time = 0
+                        end_time = 0
+                        
+                        # Check for common timing attributes
+                        if hasattr(item, 'start_time'):
+                            start_time = item.start_time
+                        if hasattr(item, 'end_time'):
+                            end_time = item.end_time
+                        if hasattr(item, 'timestamp'):
+                            start_time = end_time = item.timestamp
+                        if hasattr(item, 'created_at'):
+                            start_time = end_time = item.created_at
+                        
+                        # Log all available attributes on first item to see what's available
+                        if idx == 0:
+                            logger.info(f"  📊 Item attributes: {[a for a in dir(item) if not a.startswith('_')][:30]}")
+                        
+                        conversation_items.append({
+                            "type": "message",
+                            "role": role,
+                            "content": [{"text": content}],
+                            "start_time": start_time,
+                            "end_time": end_time,
+                        })
+                        
+                        logger.info(f"  [{idx}] {role}: {content[:60]}... (t={start_time}-{end_time})")
+                        
+                        if item.interrupted:
+                            logger.info(f"       (interrupted)")
+                    
+                    elif item.type == "function_call":
+                        logger.info(f"  [{idx}] function_call: {item.name}")
+                    
+                    elif item.type == "function_call_output":
+                        logger.info(f"  [{idx}] function_output: {item.name}")
+                    
+                    elif item.type == "agent_handoff":
+                        logger.info(f"  [{idx}] agent_handoff")
+                
+                logger.info(f"✅ Extracted {len(conversation_items)} conversation messages")
+            
+            else:
+                logger.warning("⚠️ Session does not have history.items")
+                logger.warning(f"  Has history: {hasattr(session, 'history')}")
+                if hasattr(session, 'history'):
+                    logger.warning(f"  Has items: {hasattr(session.history, 'items')}")
+            
+            # Build session report
+            session_report = {
+                "room_name": ctx.room.name,
+                "history": {
+                    "items": conversation_items
+                },
+                "timestamp": datetime.now().isoformat(),
+            }
+            
+            logger.info(f"📊 Session report built with {len(conversation_items)} conversation items")
             
             # Hardcoded API URL for now
             next_api_url = "https://interview-app-indol.vercel.app"
-            logger.info(f"🔍 API URL (hardcoded): {next_api_url}")
-            
-            # Get the session history directly from the session instance
-            if _session_instance is None:
-                logger.error("❌ Session instance is None, cannot get history")
-                return
-            
-            logger.info(f"🔍 Session instance type: {type(_session_instance)}")
-            logger.info(f"🔍 Session instance attributes: {dir(_session_instance.history)}")
-            
-            # Convert session history to dict
-            history_dict = _session_instance.history.to_dict()
-            
-            logger.info(f"📊 Session report generated for room: {ctx.room.name}")
-            logger.info(f"📊 Report contains {len(history_dict.get('items', []))} conversation items")
-            logger.info(f"🔍 History dict keys: {history_dict.keys()}")
-            
-            # Log ALL items to see what's there
-            all_items = history_dict.get('items', [])
-            logger.info(f"🔍 Total items: {len(all_items)}")
-            for idx, item in enumerate(all_items):
-                logger.info(f"🔍 Item {idx}: type={item.get('type')}, role={item.get('role')}, has_content={bool(item.get('content'))}")
-            
-            # Log first 2 items in detail
-            logger.info(f"🔍 First 2 items (detailed): {all_items[:2]}")
-            
-            # Build session report structure
-            session_report = {
-                "room_name": ctx.room.name,
-                "history": history_dict,
-                "timestamp": datetime.now().isoformat(),
-            }
             
             # Extract interview ID from room name
             room_name = ctx.room.name
@@ -496,8 +706,10 @@ async def entrypoint(ctx: JobContext):
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
             # Don't raise - we don't want to break the session cleanup
     
-    # Add the session report callback
-    ctx.add_shutdown_callback(send_session_report)
+    # Reset conversation history for this session
+    _conversation_history = []
+    _last_message_time = 0.0
+    logger.info("🔄 Conversation tracking initialized")
     
     ctx.log_context_fields = {"room": ctx.room.name}
     
@@ -563,32 +775,49 @@ async def entrypoint(ctx: JobContext):
         logger.warning(f"⚠️ Room name: {ctx.room.name}")
         ragie_global_partition = "visa-student"
     
-    # Try ElevenLabs TTS first, fallback to Cartesia if it fails
-    logger.info("Attempting to initialize ElevenLabs TTS...")
-    tts_instance = None
+    # Get interview language from config (default to English)
+    interview_language = _agent_config.get('interviewLanguage', 'en')
+    logger.info(f"🌍 Interview language: {interview_language}")
     
-    try:
-        raise Exception("Test error")
-        # Try ElevenLabs first
-        tts_instance = elevenlabs.TTS(
-            voice_id="39RWTTKuyH2ra0eFxGkf",  # Your custom ElevenLabs voice
-            model="eleven_multilingual_v2"
+    # Use Cartesia TTS as primary for lower latency and better reliability
+    logger.info("Configuring Cartesia TTS (primary for low latency)...")
+    
+    # Use custom voice for English, fallback to default multilingual voice for other languages
+    if interview_language == 'en':
+        # Custom English voice
+        tts_instance = inference.TTS(
+            model="cartesia/sonic-3",
+            voice="bd9120b6-7761-47a6-a446-77ca49132781",
+            language="en",
         )
-        logger.info("✅ ElevenLabs TTS initialized successfully")
-    except Exception as e:
-        logger.warning(f"⚠️ ElevenLabs TTS initialization failed: {e}")
-        logger.info("Falling back to Cartesia TTS via LiveKit Inference")
-        tts_instance = "cartesia/sonic-3"
-        logger.info("✅ Cartesia TTS configured successfully (fallback)")
+        logger.info("✅ Cartesia TTS configured with custom English voice")
+    else:
+        # Default multilingual voice with proper language setting
+        tts_instance = inference.TTS(
+            model="cartesia/sonic-3",
+            language=interview_language,  # Set the language explicitly
+        )
+        logger.info(f"✅ Cartesia TTS configured with default voice for language: {interview_language}")
     
-    # Create session
+    # Create session with TTS-aligned transcripts for timing
+    # Use Deepgram Nova-3 for multilingual STT support
+    # AssemblyAI universal-streaming only supports English
+    if interview_language == 'en':
+        stt_model = "assemblyai/universal-streaming"
+        logger.info(f"🎤 STT model: {stt_model} (English)")
+    else:
+        # Deepgram Nova-3:multi supports language switching and handles English proper nouns correctly
+        stt_model = "deepgram/nova-3:multi"
+        logger.info(f"🎤 STT model: {stt_model} (multilingual with language switching)")
+    
     session = AgentSession(
-        stt="assemblyai/universal-streaming:en",
+        stt=stt_model,
         llm="openai/gpt-4.1",
         tts=tts_instance,
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=True,
+        use_tts_aligned_transcript=True,  # Enable timing information
     )
 
     _session_instance = session
@@ -600,12 +829,161 @@ async def entrypoint(ctx: JobContext):
     def _on_metrics_collected(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
         usage_collector.collect(ev.metrics)
+    
+    # Track the report task so we can await it before shutdown
+    report_task = None
+    
+    # Register session close callback to send transcript to API
+    @session.on("close")
+    def _on_session_close(ev):
+        """Called when the agent session closes - send transcript to Next.js API"""
+        nonlocal report_task
+        logger.info("📊 Session close event triggered")
+        logger.info(f"📊 Close reason: {ev.reason if hasattr(ev, 'reason') else 'unknown'}")
+        # Create task and store reference so we can await it later
+        report_task = asyncio.create_task(send_session_report())
+    
+    # Ensure the report task completes before shutdown
+    async def await_report_task():
+        nonlocal report_task
+        if report_task:
+            logger.info("⏳ Waiting for session report to complete...")
+            await report_task
+            logger.info("✅ Session report task completed")
+    
+    ctx.add_shutdown_callback(await_report_task)
+    
+    # Word corrections for common STT mishears
+    WORD_CORRECTIONS = {
+        # Add common mishears here - map inappropriate words to likely intended words
+        # Example: If STT consistently mishears "condo" as something inappropriate
+        # "inappropriate_word": "condo",
+    }
+    
+    def sanitize_transcription(text: str) -> str:
+        """Filter and correct commonly misheard words"""
+        # Apply word corrections (case-insensitive)
+        corrected_text = text
+        for bad_word, good_word in WORD_CORRECTIONS.items():
+            # Case-insensitive replacement
+            import re
+            pattern = re.compile(re.escape(bad_word), re.IGNORECASE)
+            corrected_text = pattern.sub(good_word, corrected_text)
+        
+        return corrected_text
+    
+    # Track conversation items (user speech) as they're added to history
+    @session.on("conversation_item_added")
+    def _on_conversation_item_added(item):
+        """Track user speech with timing information"""
+        global _conversation_history, _time_elapsed, _last_user_speech_time, _silence_warnings_given
+        
+        try:
+            # Only track user messages (not agent messages - those are tracked in transcription_node)
+            if hasattr(item, 'role') and item.role == "user":
+                text = ""
+                if hasattr(item, 'content'):
+                    if isinstance(item.content, list):
+                        for block in item.content:
+                            if hasattr(block, 'text'):
+                                text += block.text + " "
+                            elif isinstance(block, str):
+                                text += block + " "
+                    elif isinstance(item.content, str):
+                        text = item.content
+                
+                text = text.strip()
+                
+                # Apply word filtering/correction
+                if text:
+                    text = sanitize_transcription(text)
+                
+                if text:
+                    # Update last user speech time
+                    import time
+                    _last_user_speech_time = time.time()
+                    _silence_warnings_given = 0  # Reset warning count when user speaks
+                    
+                    # Use current elapsed time as timestamp
+                    # (user speech happens "now" in the conversation)
+                    _conversation_history.append({
+                        "role": "user",
+                        "text": text,
+                        "start_time": _time_elapsed,
+                        "end_time": _time_elapsed,  # Will be updated if we get duration info
+                    })
+                    logger.info(f"📊 Tracked user message: {text[:50]}... ({_time_elapsed:.1f}s)")
+        except Exception as e:
+            logger.error(f"❌ Error tracking conversation item: {e}")
 
     async def log_usage():
         summary = usage_collector.get_summary()
         logger.info(f"Usage: {summary}")
 
     ctx.add_shutdown_callback(log_usage)
+    
+    # Background task to monitor for silence/no user response
+    silence_monitor_task = None
+    
+    async def monitor_silence():
+        """Monitor for prolonged silence and prompt user or end interview"""
+        global _last_user_speech_time, _silence_warnings_given
+        import time
+        
+        SILENCE_THRESHOLD = 30  # 30 seconds of silence before warning
+        WARNING_WAIT_TIME = 10  # Wait 10 seconds after warning
+        MAX_WARNINGS = 2  # After 2 warnings, end interview
+        
+        try:
+            # Wait a bit before starting to monitor (give user time to start speaking)
+            await asyncio.sleep(15)
+            
+            while True:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+                # Skip if user hasn't started speaking yet (still in initial greeting)
+                if _last_user_speech_time is None:
+                    continue
+                
+                current_time = time.time()
+                time_since_last_speech = current_time - _last_user_speech_time
+                
+                # If silence detected for too long
+                if time_since_last_speech > SILENCE_THRESHOLD:
+                    if _silence_warnings_given < MAX_WARNINGS:
+                        _silence_warnings_given += 1
+                        logger.warning(f"⚠️ Silence detected for {time_since_last_speech:.0f}s - giving warning #{_silence_warnings_given}")
+                        
+                        # Have the agent prompt the user
+                        session.generate_reply(
+                            instructions="The applicant has been silent for a while. Ask if they can hear you: 'I'm sorry, I cannot hear you clearly. Can you hear me? Please respond if you're still there.'"
+                        )
+                        
+                        # Wait for response
+                        await asyncio.sleep(WARNING_WAIT_TIME)
+                        
+                    else:
+                        # Max warnings reached, end interview
+                        logger.error(f"❌ No user response after {MAX_WARNINGS} warnings - ending interview due to technical difficulties")
+                        
+                        session.generate_reply(
+                            instructions="Tell the applicant there appears to be a technical issue and you cannot hear them, so you must end the interview now."
+                        )
+                        
+                        # Wait for agent to finish speaking
+                        await asyncio.sleep(5)
+                        
+                        # End the interview
+                        await ctx.room.disconnect()
+                        break
+                        
+        except asyncio.CancelledError:
+            logger.info("Silence monitor task cancelled")
+        except Exception as e:
+            logger.error(f"❌ Error in silence monitor: {e}")
+    
+    # Start silence monitoring task
+    silence_monitor_task = asyncio.create_task(monitor_silence())
     
     # Listen for time updates from frontend
     @ctx.room.on("data_received")
@@ -624,10 +1002,11 @@ async def entrypoint(ctx: JobContext):
                 if _start_time is None:
                     _start_time = elapsed
                 
-                duration = _agent_config.get('duration', 20) * 60  # convert to seconds
+                duration_minutes = _agent_config.get('durationMinutes', 20)
+                duration = duration_minutes * 60  # convert to seconds
                 percentage = (elapsed / duration) * 100 if duration > 0 else 0
                 
-                logger.info(f"Time update: {elapsed}s elapsed ({percentage:.0f}% of {duration}s)")
+                logger.info(f"Time update: {elapsed}s elapsed ({percentage:.0f}% of {duration}s / {duration_minutes} min)")
                 
                 # Inject wrap-up context at 80% mark
                 if percentage >= 80 and percentage < 85:
@@ -653,17 +1032,16 @@ async def entrypoint(ctx: JobContext):
         ragie_global_partition=ragie_global_partition,
     )
     
-    # Initialize and start Tavus avatar BEFORE starting the session (critical order!)
-    logger.info("🎭 Initializing Tavus avatar...")
-    replica_id = os.getenv("TAVUS_REPLICA_ID")
-    persona_id = os.getenv("TAVUS_PERSONA_ID")
-    logger.info(f"  - Replica ID: {replica_id[:20]}..." if replica_id else "  - Replica ID: NOT SET")
-    logger.info(f"  - Persona ID: {persona_id[:20]}..." if persona_id else "  - Persona ID: NOT SET")
+    # Initialize and start LiveAvatar BEFORE starting the session (critical order!)
+    logger.info("🎭 Initializing LiveAvatar...")
+    avatar_id = os.getenv("LIVEAVATAR_AVATAR_ID")
+    logger.info(f"  - Avatar ID: {avatar_id[:20]}..." if avatar_id else "  - Avatar ID: NOT SET")
     
     try:
-        avatar = tavus.AvatarSession(
-            replica_id=replica_id,
-            persona_id=persona_id,
+        # Configure avatar
+        # Note: LiveAvatar API doesn't expose video quality settings via Python SDK
+        avatar = liveavatar.AvatarSession(
+            avatar_id=avatar_id,
         )
         logger.info("  - AvatarSession object created")
         
@@ -672,18 +1050,18 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"  - Room type: {type(ctx.room)}")
         logger.info(f"  - Room state: {ctx.room.connection_state}")
         
-        # Start avatar FIRST (per Tavus docs)
+        # Start avatar FIRST (per LiveAvatar docs)
         await avatar.start(session, room=ctx.room)
-        logger.info("✅ Tavus avatar.start() completed")
+        logger.info("✅ LiveAvatar avatar.start() completed")
         
-        # Wait a moment for Tavus to publish tracks
+        # Wait a moment for LiveAvatar to publish tracks
         await asyncio.sleep(1)
-        logger.info("  - Waited 1s for Tavus to join and publish tracks")
+        logger.info("  - Waited 1s for LiveAvatar to join and publish tracks")
         
-        logger.info("✅ Tavus avatar initialized and started successfully")
+        logger.info("✅ LiveAvatar initialized and started successfully")
         
     except Exception as e:
-        logger.error(f"❌ ERROR initializing Tavus avatar: {e}")
+        logger.error(f"❌ ERROR initializing LiveAvatar: {e}")
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         raise
     
@@ -745,7 +1123,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"🎤 Generating initial greeting for {visa_code} interview...")
     try:
         session.generate_reply(
-            instructions=f"Greet the applicant briefly for their {visa_code} visa interview and ask your first question from the question bank. Be direct and slightly impatient, as you have many applicants to process today."
+            instructions=f"Start the interview by saying 'Hello. Please state your name for the record.' Wait for their response, then acknowledge and ask your first question from the question bank about their {visa_code} visa application."
         )
         logger.info("✅ Greeting generation initiated successfully")
     except Exception as e:
